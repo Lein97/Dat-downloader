@@ -3,7 +3,7 @@ name: Download No-Intro DATs
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 4 * * 0'
+    - cron: '0 4 * * 0'   # Domingos 04:00 UTC
 
 permissions:
   contents: write
@@ -11,7 +11,7 @@ permissions:
 jobs:
   download:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout del repositorio
@@ -27,75 +27,98 @@ jobs:
           python -m pip install --upgrade pip
           pip install "datoso[all]"
 
-      - name: Explorar la CLI de datoso (debug)
+      - name: Diagnóstico - ver versión y ayuda de datoso
         run: |
-          echo "=== datoso --version ==="
+          echo "===== datoso --version ====="
           datoso --version || true
           echo ""
-          echo "=== datoso nointro --help ==="
+          echo "===== datoso --help ====="
+          datoso --help || true
+          echo ""
+          echo "===== datoso nointro --help ====="
           datoso nointro --help || true
           echo ""
-          echo "=== datoso nointro fetch --help ==="
-          datoso nointro fetch --help || true
+          echo "===== datoso dat --help ====="
+          datoso dat --help || true
+
+      - name: Inicializar configuración de datoso
+        run: |
+          # Algunos comandos requieren que el config esté inicializado
+          datoso config --help || true
+          # Crear directorios de salida
+          mkdir -p ~/.local/share/datoso
+          mkdir -p dats
 
       - name: Descargar todos los DATs de No-Intro
         run: |
-          # Sintaxis correcta: datoso <seed> <action>
-          datoso nointro fetch
+          set -x
 
-      - name: (Opcional) Procesar los DATs descargados
-        continue-on-error: true
-        run: |
-          datoso nointro process || echo "El comando process no existe en esta versión, ignorando."
+          # Sintaxis 1: datoso nointro fetch (la más probable)
+          if datoso nointro fetch; then
+            echo "✓ datoso nointro fetch OK"
+            exit 0
+          fi
+
+          # Sintaxis 2: datoso nointro download
+          if datoso nointro download; then
+            echo "✓ datoso nointro download OK"
+            exit 0
+          fi
+
+          # Sintaxis 3: datoso dat fetch nointro
+          if datoso dat fetch nointro; then
+            echo "✓ datoso dat fetch nointro OK"
+            exit 0
+          fi
+
+          # Sintaxis 4: datoso all fetch (todos los seeds)
+          if datoso all fetch; then
+            echo "✓ datoso all fetch OK"
+            exit 0
+          fi
+
+          echo "❌ Ninguna sintaxis funcionó. Revisa los logs de --help arriba."
+          exit 1
 
       - name: Localizar los DATs descargados
         id: locate
         run: |
-          echo "Buscando archivos .dat en el sistema..."
+          echo "Buscando archivos .dat..."
+          echo "--- Home directory structure ---"
+          ls -la ~/ || true
+          echo "--- ~/.local/share/datoso ---"
+          ls -la ~/.local/share/datoso/ 2>/dev/null || true
+          echo "--- ~/.datoso ---"
+          ls -la ~/.datoso/ 2>/dev/null || true
+          echo "--- Workspace ---"
+          ls -la . || true
 
-          # Posibles rutas donde datoso guarda los archivos
           SEARCH_DIRS=(
             "$HOME/.local/share/datoso"
-            "$HOME/.config/datoso"
             "$HOME/.datoso"
             "$HOME/datoso"
+            "/tmp/datoso"
             "$GITHUB_WORKSPACE"
-            "$GITHUB_WORKSPACE/datoso"
           )
 
-          # Listar todo lo que existe para debug
-          echo "=== Contenido de HOME ==="
-          ls -la "$HOME" || true
-          echo ""
-          for d in "${SEARCH_DIRS[@]}"; do
-            if [ -d "$d" ]; then
-              echo "=== Contenido de $d ==="
-              find "$d" -maxdepth 3 -type f | head -30
-              echo ""
-            fi
-          done
-
-          # Crear carpeta de salida y copiar todos los .dat encontrados
           mkdir -p dats
           for d in "${SEARCH_DIRS[@]}"; do
             if [ -d "$d" ]; then
-              find "$d" -type f -name "*.dat" -exec cp -v {} dats/ \;
+              echo "Revisando $d ..."
+              find "$d" -type f -name "*.dat" -exec cp -v {} dats/ \; 2>/dev/null || true
             fi
           done
 
-          echo "======================================"
-          echo "Total de DATs copiados:"
-          ls -1 dats/ | wc -l
-          echo "======================================"
-          ls -la dats/ | head -30
+          COUNT=$(ls -1 dats/*.dat 2>/dev/null | wc -l)
+          echo "Total de DATs copiados: $COUNT"
+          ls -la dats/ | head -40
 
-          echo "count=$(ls -1 dats/ | wc -l)" >> $GITHUB_OUTPUT
+          echo "count=$COUNT" >> $GITHUB_OUTPUT
 
       - name: Fallar si no se descargó ningún DAT
         if: steps.locate.outputs.count == '0'
         run: |
-          echo "ERROR: No se encontró ningún .dat después de ejecutar datoso."
-          echo "Revisa los logs del paso 'Localizar los DATs' para ver dónde buscó."
+          echo "❌ No se descargó ningún DAT. Revisa los pasos anteriores."
           exit 1
 
       - name: Comprimir DATs en un ZIP
@@ -116,10 +139,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
           mkdir -p dat_files
           cp -v dats/*.dat dat_files/ 2>/dev/null || true
-
           git add dat_files/
           if git diff --staged --quiet; then
             echo "Sin cambios en los DATs"
