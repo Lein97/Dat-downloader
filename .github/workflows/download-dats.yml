@@ -3,7 +3,7 @@ name: Download No-Intro DATs
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 4 * * 0'   # Domingos 04:00 UTC
+    - cron: '0 4 * * 0'   # Cada domingo 04:00 UTC
 
 permissions:
   contents: write
@@ -11,7 +11,7 @@ permissions:
 jobs:
   download:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 40
 
     steps:
       - name: Checkout del repositorio
@@ -27,81 +27,65 @@ jobs:
           python -m pip install --upgrade pip
           pip install "datoso[all]"
 
-      - name: Diagnóstico - ver versión y ayuda de datoso
+      - name: Diagnóstico (ayudas de la CLI)
         run: |
           echo "===== datoso --version ====="
           datoso --version || true
           echo ""
-          echo "===== datoso --help ====="
-          datoso --help || true
-          echo ""
-          echo "===== datoso nointro --help ====="
-          datoso nointro --help || true
+          echo "===== datoso seed --help ====="
+          datoso seed --help 2>&1 || true
           echo ""
           echo "===== datoso dat --help ====="
-          datoso dat --help || true
+          datoso dat --help 2>&1 || true
+          echo ""
+          echo "===== datoso nointro --help ====="
+          datoso nointro --help 2>&1 || true
+          echo ""
+          echo "===== datoso import --help ====="
+          datoso import --help 2>&1 || true
 
-      - name: Inicializar configuración de datoso
-        run: |
-          # Algunos comandos requieren que el config esté inicializado
-          datoso config --help || true
-          # Crear directorios de salida
-          mkdir -p ~/.local/share/datoso
-          mkdir -p dats
-
-      - name: Descargar todos los DATs de No-Intro
+      - name: Descargar seed de No-Intro
         run: |
           set -x
+          # El seed es la lista de DATs disponibles. Sin él, 'dat' no sabe qué bajar.
+          datoso seed nointro \
+            || datoso seed no-intro \
+            || datoso seed --all \
+            || datoso seed -a \
+            || (echo "❌ No se pudo descargar el seed" && exit 1)
 
-          # Sintaxis 1: datoso nointro fetch (la más probable)
-          if datoso nointro fetch; then
-            echo "✓ datoso nointro fetch OK"
-            exit 0
-          fi
-
-          # Sintaxis 2: datoso nointro download
-          if datoso nointro download; then
-            echo "✓ datoso nointro download OK"
-            exit 0
-          fi
-
-          # Sintaxis 3: datoso dat fetch nointro
-          if datoso dat fetch nointro; then
-            echo "✓ datoso dat fetch nointro OK"
-            exit 0
-          fi
-
-          # Sintaxis 4: datoso all fetch (todos los seeds)
-          if datoso all fetch; then
-            echo "✓ datoso all fetch OK"
-            exit 0
-          fi
-
-          echo "❌ Ninguna sintaxis funcionó. Revisa los logs de --help arriba."
-          exit 1
+      - name: Descargar DATs de No-Intro
+        run: |
+          set -x
+          # Variantes de sintaxis según versión de datoso.
+          datoso dat nointro \
+            || datoso dat no-intro \
+            || datoso dat -d nointro \
+            || datoso dat -a nointro \
+            || datoso dat -a \
+            || datoso nointro \
+            || (echo "❌ No se pudieron descargar los DATs" && exit 1)
 
       - name: Localizar los DATs descargados
         id: locate
         run: |
-          echo "Buscando archivos .dat..."
-          echo "--- Home directory structure ---"
-          ls -la ~/ || true
-          echo "--- ~/.local/share/datoso ---"
-          ls -la ~/.local/share/datoso/ 2>/dev/null || true
-          echo "--- ~/.datoso ---"
-          ls -la ~/.datoso/ 2>/dev/null || true
-          echo "--- Workspace ---"
-          ls -la . || true
+          echo "===== Buscando archivos .dat ====="
 
+          # Posibles rutas donde datoso guarda sus archivos
           SEARCH_DIRS=(
             "$HOME/.local/share/datoso"
+            "$HOME/.config/datoso"
             "$HOME/.datoso"
             "$HOME/datoso"
+            "$HOME/.cache/datoso"
             "/tmp/datoso"
             "$GITHUB_WORKSPACE"
           )
 
+          # Crear carpeta de salida
           mkdir -p dats
+
+          # Copiar todos los .dat encontrados
           for d in "${SEARCH_DIRS[@]}"; do
             if [ -d "$d" ]; then
               echo "Revisando $d ..."
@@ -109,17 +93,20 @@ jobs:
             fi
           done
 
-          COUNT=$(ls -1 dats/*.dat 2>/dev/null | wc -l)
-          echo "Total de DATs copiados: $COUNT"
+          # Contar y listar
+          COUNT=$(find dats -type f -name "*.dat" | wc -l)
+          echo "Total de DATs encontrados: $COUNT"
           ls -la dats/ | head -40
 
           echo "count=$COUNT" >> $GITHUB_OUTPUT
 
-      - name: Fallar si no se descargó ningún DAT
-        if: steps.locate.outputs.count == '0'
-        run: |
-          echo "❌ No se descargó ningún DAT. Revisa los pasos anteriores."
-          exit 1
+          if [ "$COUNT" -eq 0 ]; then
+            echo "❌ No se encontró ningún DAT. Rutas revisadas:"
+            for d in "${SEARCH_DIRS[@]}"; do
+              [ -d "$d" ] && echo "  - $d" && ls -la "$d" || true
+            done
+            exit 1
+          fi
 
       - name: Comprimir DATs en un ZIP
         run: |
@@ -136,11 +123,14 @@ jobs:
           retention-days: 90
 
       - name: Commit de los DATs al repositorio
+        if: steps.locate.outputs.count != '0'
         run: |
-          git config user.name "github-actions[bot]"
+          git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
           mkdir -p dat_files
           cp -v dats/*.dat dat_files/ 2>/dev/null || true
+
           git add dat_files/
           if git diff --staged --quiet; then
             echo "Sin cambios en los DATs"
@@ -148,15 +138,3 @@ jobs:
             git commit -m "🤖 Actualizar DATs de No-Intro ($(date -u +%Y-%m-%d))"
             git push
           fi
-
-      - name: Crear Release con los DATs
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: dats-${{ github.run_number }}
-          name: "No-Intro DATs #${{ github.run_number }}"
-          body: |
-            Descarga automatizada de los DATs de No-Intro.
-            Total de DATs: ${{ steps.locate.outputs.count }}
-          files: no-intro-dats.zip
-          draft: false
-          prerelease: false
