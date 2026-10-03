@@ -35,35 +35,17 @@ jobs:
           echo "===== datoso seed --help ====="
           datoso seed --help 2>&1 || true
           echo ""
-          echo "===== datoso dat --help ====="
-          datoso dat --help 2>&1 || true
-          echo ""
           echo "===== datoso nointro --help ====="
           datoso nointro --help 2>&1 || true
-          echo ""
-          echo "===== datoso import --help ====="
-          datoso import --help 2>&1 || true
 
-      - name: Descargar seed de No-Intro
+      - name: Descargar todos los DATs de No-Intro
         run: |
           set -x
-          # El seed es la lista de DATs disponibles. Sin él, 'dat' no sabe qué bajar.
-          datoso seed nointro \
-            || datoso seed no-intro \
-            || datoso seed --all \
-            || datoso seed -a \
-            || (echo "❌ No se pudo descargar el seed" && exit 1)
-
-      - name: Descargar DATs de No-Intro
-        run: |
-          set -x
-          # Variantes de sintaxis según versión de datoso.
-          datoso dat nointro \
-            || datoso dat no-intro \
-            || datoso dat -d nointro \
-            || datoso dat -a nointro \
-            || datoso dat -a \
-            || datoso nointro \
+          datoso nointro --fetch \
+            || datoso all --fetch \
+            || datoso no-intro --fetch \
+            || datoso nointro -f \
+            || datoso all -f \
             || (echo "❌ No se pudieron descargar los DATs" && exit 1)
 
       - name: Localizar los DATs descargados
@@ -71,7 +53,6 @@ jobs:
         run: |
           echo "===== Buscando archivos .dat ====="
 
-          # Posibles rutas donde datoso guarda sus archivos
           SEARCH_DIRS=(
             "$HOME/.local/share/datoso"
             "$HOME/.config/datoso"
@@ -82,10 +63,8 @@ jobs:
             "$GITHUB_WORKSPACE"
           )
 
-          # Crear carpeta de salida
           mkdir -p dats
 
-          # Copiar todos los .dat encontrados
           for d in "${SEARCH_DIRS[@]}"; do
             if [ -d "$d" ]; then
               echo "Revisando $d ..."
@@ -93,7 +72,6 @@ jobs:
             fi
           done
 
-          # Contar y listar
           COUNT=$(find dats -type f -name "*.dat" | wc -l)
           echo "Total de DATs encontrados: $COUNT"
           ls -la dats/ | head -40
@@ -101,10 +79,8 @@ jobs:
           echo "count=$COUNT" >> $GITHUB_OUTPUT
 
           if [ "$COUNT" -eq 0 ]; then
-            echo "❌ No se encontró ningún DAT. Rutas revisadas:"
-            for d in "${SEARCH_DIRS[@]}"; do
-              [ -d "$d" ] && echo "  - $d" && ls -la "$d" || true
-            done
+            echo "❌ No se encontró ningún DAT."
+            find "$HOME" -type d -name "*datoso*" 2>/dev/null || true
             exit 1
           fi
 
