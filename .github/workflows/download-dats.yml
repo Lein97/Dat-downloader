@@ -1,14 +1,10 @@
 name: Download No-Intro DATs
 
 on:
-  # Ejecución manual desde la pestaña Actions
   workflow_dispatch:
-
-  # Ejecución automática: todos los domingos a las 04:00 UTC
   schedule:
     - cron: '0 4 * * 0'
 
-# Necesario para poder hacer commit de los DATs al repositorio
 permissions:
   contents: write
 
@@ -31,40 +27,51 @@ jobs:
           python -m pip install --upgrade pip
           pip install "datoso[all]"
 
-      - name: Verificar instalación
+      - name: Explorar la CLI de datoso (debug)
         run: |
+          echo "=== datoso --version ==="
           datoso --version || true
-          datoso --help || true
+          echo ""
+          echo "=== datoso nointro --help ==="
+          datoso nointro --help || true
+          echo ""
+          echo "=== datoso nointro fetch --help ==="
+          datoso nointro fetch --help || true
 
       - name: Descargar todos los DATs de No-Intro
         run: |
-          # El comando puede variar según la versión de datoso.
-          # Probamos varias sintaxis y usamos la que funcione.
-          datoso fetch no-intro \
-            || datoso no-intro fetch \
-            || datoso fetch --all \
-            || (echo "Ninguna sintaxis de datoso funcionó" && exit 1)
+          # Sintaxis correcta: datoso <seed> <action>
+          datoso nointro fetch
+
+      - name: (Opcional) Procesar los DATs descargados
+        continue-on-error: true
+        run: |
+          datoso nointro process || echo "El comando process no existe en esta versión, ignorando."
 
       - name: Localizar los DATs descargados
         id: locate
         run: |
           echo "Buscando archivos .dat en el sistema..."
+
           # Posibles rutas donde datoso guarda los archivos
           SEARCH_DIRS=(
             "$HOME/.local/share/datoso"
+            "$HOME/.config/datoso"
             "$HOME/.datoso"
             "$HOME/datoso"
-            "/tmp/datoso"
             "$GITHUB_WORKSPACE"
+            "$GITHUB_WORKSPACE/datoso"
           )
-          FOUND=""
+
+          # Listar todo lo que existe para debug
+          echo "=== Contenido de HOME ==="
+          ls -la "$HOME" || true
+          echo ""
           for d in "${SEARCH_DIRS[@]}"; do
             if [ -d "$d" ]; then
-              echo "Revisando $d ..."
-              find "$d" -type f -name "*.dat" | head -20
-              if [ -z "$FOUND" ]; then
-                FOUND="$d"
-              fi
+              echo "=== Contenido de $d ==="
+              find "$d" -maxdepth 3 -type f | head -30
+              echo ""
             fi
           done
 
@@ -76,11 +83,20 @@ jobs:
             fi
           done
 
+          echo "======================================"
           echo "Total de DATs copiados:"
           ls -1 dats/ | wc -l
+          echo "======================================"
           ls -la dats/ | head -30
 
           echo "count=$(ls -1 dats/ | wc -l)" >> $GITHUB_OUTPUT
+
+      - name: Fallar si no se descargó ningún DAT
+        if: steps.locate.outputs.count == '0'
+        run: |
+          echo "ERROR: No se encontró ningún .dat después de ejecutar datoso."
+          echo "Revisa los logs del paso 'Localizar los DATs' para ver dónde buscó."
+          exit 1
 
       - name: Comprimir DATs en un ZIP
         run: |
@@ -96,13 +112,11 @@ jobs:
           path: no-intro-dats.zip
           retention-days: 90
 
-      - name: Commit de los DATs al repositorio (opcional)
-        if: steps.locate.outputs.count != '0'
+      - name: Commit de los DATs al repositorio
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Copiar los DATs a una carpeta del repo
           mkdir -p dat_files
           cp -v dats/*.dat dat_files/ 2>/dev/null || true
 
@@ -114,15 +128,13 @@ jobs:
             git push
           fi
 
-      - name: Crear Release con los DATs (opcional)
-        if: steps.locate.outputs.count != '0'
+      - name: Crear Release con los DATs
         uses: softprops/action-gh-release@v2
         with:
           tag_name: dats-${{ github.run_number }}
           name: "No-Intro DATs #${{ github.run_number }}"
           body: |
             Descarga automatizada de los DATs de No-Intro.
-            Generado el ${{ github.event.repository.updated_at }}.
             Total de DATs: ${{ steps.locate.outputs.count }}
           files: no-intro-dats.zip
           draft: false
