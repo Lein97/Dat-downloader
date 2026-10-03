@@ -1,0 +1,129 @@
+name: Download No-Intro DATs
+
+on:
+  # Ejecución manual desde la pestaña Actions
+  workflow_dispatch:
+
+  # Ejecución automática: todos los domingos a las 04:00 UTC
+  schedule:
+    - cron: '0 4 * * 0'
+
+# Necesario para poder hacer commit de los DATs al repositorio
+permissions:
+  contents: write
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar datoso con todos los plugins
+        run: |
+          python -m pip install --upgrade pip
+          pip install "datoso[all]"
+
+      - name: Verificar instalación
+        run: |
+          datoso --version || true
+          datoso --help || true
+
+      - name: Descargar todos los DATs de No-Intro
+        run: |
+          # El comando puede variar según la versión de datoso.
+          # Probamos varias sintaxis y usamos la que funcione.
+          datoso fetch no-intro \
+            || datoso no-intro fetch \
+            || datoso fetch --all \
+            || (echo "Ninguna sintaxis de datoso funcionó" && exit 1)
+
+      - name: Localizar los DATs descargados
+        id: locate
+        run: |
+          echo "Buscando archivos .dat en el sistema..."
+          # Posibles rutas donde datoso guarda los archivos
+          SEARCH_DIRS=(
+            "$HOME/.local/share/datoso"
+            "$HOME/.datoso"
+            "$HOME/datoso"
+            "/tmp/datoso"
+            "$GITHUB_WORKSPACE"
+          )
+          FOUND=""
+          for d in "${SEARCH_DIRS[@]}"; do
+            if [ -d "$d" ]; then
+              echo "Revisando $d ..."
+              find "$d" -type f -name "*.dat" | head -20
+              if [ -z "$FOUND" ]; then
+                FOUND="$d"
+              fi
+            fi
+          done
+
+          # Crear carpeta de salida y copiar todos los .dat encontrados
+          mkdir -p dats
+          for d in "${SEARCH_DIRS[@]}"; do
+            if [ -d "$d" ]; then
+              find "$d" -type f -name "*.dat" -exec cp -v {} dats/ \;
+            fi
+          done
+
+          echo "Total de DATs copiados:"
+          ls -1 dats/ | wc -l
+          ls -la dats/ | head -30
+
+          echo "count=$(ls -1 dats/ | wc -l)" >> $GITHUB_OUTPUT
+
+      - name: Comprimir DATs en un ZIP
+        run: |
+          cd dats
+          zip -r ../no-intro-dats.zip .
+          cd ..
+          ls -lh no-intro-dats.zip
+
+      - name: Subir DATs como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: no-intro-dats-${{ github.run_number }}
+          path: no-intro-dats.zip
+          retention-days: 90
+
+      - name: Commit de los DATs al repositorio (opcional)
+        if: steps.locate.outputs.count != '0'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Copiar los DATs a una carpeta del repo
+          mkdir -p dat_files
+          cp -v dats/*.dat dat_files/ 2>/dev/null || true
+
+          git add dat_files/
+          if git diff --staged --quiet; then
+            echo "Sin cambios en los DATs"
+          else
+            git commit -m "🤖 Actualizar DATs de No-Intro ($(date -u +%Y-%m-%d))"
+            git push
+          fi
+
+      - name: Crear Release con los DATs (opcional)
+        if: steps.locate.outputs.count != '0'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dats-${{ github.run_number }}
+          name: "No-Intro DATs #${{ github.run_number }}"
+          body: |
+            Descarga automatizada de los DATs de No-Intro.
+            Generado el ${{ github.event.repository.updated_at }}.
+            Total de DATs: ${{ steps.locate.outputs.count }}
+          files: no-intro-dats.zip
+          draft: false
+          prerelease: false
